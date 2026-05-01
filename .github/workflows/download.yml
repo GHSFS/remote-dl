@@ -29,13 +29,16 @@ jobs:
           echo "::add-mask::${{ inputs.filename }}"
 
       - name: Setup rclone
+        env:
+          RCLONE_CONF_DATA: ${{ secrets.RCLONE_CONF }}
         run: |
           curl -sLo /tmp/rclone.zip https://downloads.rclone.org/rclone-current-linux-amd64.zip
           unzip -q /tmp/rclone.zip -d /tmp
           sudo mv /tmp/rclone-*-linux-amd64/rclone /usr/local/bin/
           mkdir -p ~/.config/rclone
-          printf '%s' "${{ secrets.RCLONE_CONF }}" > ~/.config/rclone/rclone.conf
+          printf '%s\n' "$RCLONE_CONF_DATA" > ~/.config/rclone/rclone.conf
           rclone version
+          rclone listremotes
 
       - name: Download and stream to OneDrive
         env:
