@@ -1,0 +1,63 @@
+name: Remote Download to OneDrive
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: "Download URL (https://...)"
+        required: true
+      filename:
+        description: "Save as (optional, leave blank to auto-detect)"
+        required: false
+        default: ""
+      folder:
+        description: "OneDrive folder (default: remote-dl)"
+        required: false
+        default: "remote-dl"
+
+permissions:
+  contents: read
+
+jobs:
+  download:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - name: Mask sensitive inputs
+        run: |
+          echo "::add-mask::${{ inputs.url }}"
+          echo "::add-mask::${{ inputs.filename }}"
+
+      - name: Setup rclone
+        run: |
+          curl -sLo /tmp/rclone.zip https://downloads.rclone.org/rclone-current-linux-amd64.zip
+          unzip -q /tmp/rclone.zip -d /tmp
+          sudo mv /tmp/rclone-*-linux-amd64/rclone /usr/local/bin/
+          mkdir -p ~/.config/rclone
+          printf '%s' "${{ secrets.RCLONE_CONF }}" > ~/.config/rclone/rclone.conf
+          rclone version
+
+      - name: Download and stream to OneDrive
+        env:
+          URL: ${{ inputs.url }}
+          FILENAME: ${{ inputs.filename }}
+          FOLDER: ${{ inputs.folder }}
+        run: |
+          set -e
+          if [ -z "$FILENAME" ]; then
+            FILENAME=$(basename "${URL%%\?*}")
+          fi
+          if [ -z "$FILENAME" ] || [ "$FILENAME" = "/" ]; then
+            FILENAME="download_$(date +%s)"
+          fi
+          echo "::add-mask::$FILENAME"
+          DEST="onedrive:$FOLDER/$FILENAME"
+          echo "Streaming to OneDrive..."
+          curl -sSL \
+            -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
+            --retry 3 --retry-delay 5 \
+            "$URL" | rclone rcat "$DEST" \
+            --onedrive-chunk-size 100M \
+            --stats=30s \
+            --stats-one-line
+          echo "Done."
