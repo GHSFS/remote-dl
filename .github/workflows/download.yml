@@ -14,6 +14,8 @@ on:
         description: "OneDrive folder (default: remote-dl)"
         required: false
         default: "remote-dl"
+  schedule:
+    - cron: "0 0 1 * *"
 
 permissions:
   contents: read
@@ -22,15 +24,26 @@ jobs:
   download:
     runs-on: ubuntu-latest
     timeout-minutes: 350
+    env:
+      RCLONE_CONF_DATA: ${{ secrets.RCLONE_CONF }}
     steps:
+      - name: Detect mode
+        id: mode
+        run: |
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            echo "skip=true" >> $GITHUB_OUTPUT
+            echo "Scheduled keep-alive run"
+          else
+            echo "skip=false" >> $GITHUB_OUTPUT
+          fi
+
       - name: Mask sensitive inputs
+        if: steps.mode.outputs.skip == 'false'
         run: |
           echo "::add-mask::${{ inputs.url }}"
           echo "::add-mask::${{ inputs.filename }}"
 
       - name: Setup rclone
-        env:
-          RCLONE_CONF_DATA: ${{ secrets.RCLONE_CONF }}
         run: |
           curl -sLo /tmp/rclone.zip https://downloads.rclone.org/rclone-current-linux-amd64.zip
           unzip -q /tmp/rclone.zip -d /tmp
@@ -38,9 +51,14 @@ jobs:
           mkdir -p ~/.config/rclone
           printf '%s\n' "$RCLONE_CONF_DATA" > ~/.config/rclone/rclone.conf
           rclone version
-          rclone listremotes
+
+      - name: Refresh token (ping OneDrive)
+        run: |
+          rclone lsd onedrive: --max-depth 1 > /dev/null
+          echo "Token verified."
 
       - name: Download and stream to OneDrive
+        if: steps.mode.outputs.skip == 'false'
         env:
           URL: ${{ inputs.url }}
           FILENAME: ${{ inputs.filename }}
@@ -64,3 +82,16 @@ jobs:
             --stats=30s \
             --stats-one-line
           echo "Done."
+
+      - name: Update refreshed token in repo secret
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          NEW_CONF=$(cat ~/.config/rclone/rclone.conf)
+          if [ "$NEW_CONF" != "$RCLONE_CONF_DATA" ]; then
+            echo "Token changed, updating secret..."
+            gh secret set RCLONE_CONF --body "$NEW_CONF" --repo ${{ github.repository }}
+            echo "Secret updated."
+          else
+            echo "No token change, secret stays."
+          fi
