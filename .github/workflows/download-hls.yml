@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       url:
-        description: 'HLS / streaming URL (m3u8, youtube, twitter, etc.)'
+        description: "URL or 'ref:<token>' (m3u8, youtube, etc.)"
         required: true
       filename:
         description: 'Save as (without extension)'
@@ -27,7 +27,7 @@ permissions:
   contents: read
 
 env:
-  WORKER_NOTIFY_URL: https://remote-dl.zoooaesooo.workers.dev/notify
+  WORKER_BASE: https://remote-dl.zoooaesooo.workers.dev
 
 jobs:
   download:
@@ -36,12 +36,33 @@ jobs:
     env:
       RCLONE_CONF_DATA: ${{ secrets.RCLONE_CONF }}
     steps:
-      - name: Mask inputs
+      - name: Resolve URL token
         env:
-          URL: ${{ inputs.url }}
+          URL_INPUT: ${{ inputs.url }}
+        run: |
+          set -e
+          if [[ "$URL_INPUT" == ref:* ]]; then
+            TOKEN="${URL_INPUT#ref:}"
+            echo "::add-mask::$TOKEN"
+            RESPONSE=$(curl -sS -X POST "$WORKER_BASE/resolve" \
+              -H "content-type: application/json" \
+              -d "{\"token\":\"$TOKEN\"}")
+            ACTUAL_URL=$(printf '%s' "$RESPONSE" | jq -r '.url // empty')
+            if [ -z "$ACTUAL_URL" ]; then
+              echo "Token resolution failed"
+              exit 1
+            fi
+            echo "::add-mask::$ACTUAL_URL"
+            echo "URL=$ACTUAL_URL" >> $GITHUB_ENV
+          else
+            echo "::add-mask::$URL_INPUT"
+            echo "URL=$URL_INPUT" >> $GITHUB_ENV
+          fi
+
+      - name: Mask filename
+        env:
           FILENAME: ${{ inputs.filename }}
         run: |
-          echo "::add-mask::$URL"
           [ -n "$FILENAME" ] && echo "::add-mask::$FILENAME" || true
 
       - name: Setup rclone + ffmpeg + yt-dlp
@@ -67,13 +88,12 @@ jobs:
           RUN_ID: ${{ github.run_id }}
           RUN_NUMBER: ${{ github.run_number }}
         run: |
-          curl -sS -X POST "$WORKER_NOTIFY_URL" \
+          curl -sS -X POST "$WORKER_BASE/notify" \
             -H "content-type: application/json" \
             -d "{\"event\":\"start\",\"notify_id\":\"$NOTIFY_ID\",\"run_id\":\"$RUN_ID\",\"run_number\":$RUN_NUMBER}" || true
 
       - name: Stream HLS to OneDrive (yt-dlp -> stdout -> rclone rcat)
         env:
-          URL: ${{ inputs.url }}
           FILENAME: ${{ inputs.filename }}
           FOLDER: ${{ inputs.folder }}
           LIVE: ${{ inputs.live }}
@@ -121,7 +141,7 @@ jobs:
           if [ -n "$DEST" ]; then
             SIZE=$(rclone size "$DEST" --json 2>/dev/null | jq -r '.bytes // 0' 2>/dev/null || echo 0)
           fi
-          curl -sS -X POST "$WORKER_NOTIFY_URL" \
+          curl -sS -X POST "$WORKER_BASE/notify" \
             -H "content-type: application/json" \
             -d "{\"event\":\"done\",\"notify_id\":\"$NOTIFY_ID\",\"bytes\":$SIZE,\"filename\":\"$FINAL_FILENAME\"}" || true
 
@@ -130,7 +150,7 @@ jobs:
         env:
           NOTIFY_ID: ${{ inputs.notify_id }}
         run: |
-          curl -sS -X POST "$WORKER_NOTIFY_URL" \
+          curl -sS -X POST "$WORKER_BASE/notify" \
             -H "content-type: application/json" \
             -d "{\"event\":\"failed\",\"notify_id\":\"$NOTIFY_ID\",\"error\":\"yt-dlp or rclone failed\"}" || true
 
