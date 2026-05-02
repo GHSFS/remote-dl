@@ -18,9 +18,16 @@ on:
         description: 'Live stream mode (record from start)'
         required: false
         default: 'false'
+      notify_id:
+        description: 'Worker progress tracking id (auto)'
+        required: false
+        default: ''
 
 permissions:
   contents: read
+
+env:
+  WORKER_NOTIFY_URL: https://remote-dl.zoooaesooo.workers.dev/notify
 
 jobs:
   download:
@@ -53,6 +60,17 @@ jobs:
           rclone lsd onedrive: --max-depth 1 > /dev/null
           echo "Token verified."
 
+      - name: Notify start
+        if: inputs.notify_id != ''
+        env:
+          NOTIFY_ID: ${{ inputs.notify_id }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          curl -sS -X POST "$WORKER_NOTIFY_URL" \
+            -H "content-type: application/json" \
+            -d "{\"event\":\"start\",\"notify_id\":\"$NOTIFY_ID\",\"run_id\":\"$RUN_ID\",\"run_number\":$RUN_NUMBER}" || true
+
       - name: Stream HLS to OneDrive (yt-dlp -> stdout -> rclone rcat)
         env:
           URL: ${{ inputs.url }}
@@ -74,6 +92,8 @@ jobs:
           else
             DEST="onedrive:$FOLDER/$FILENAME"
           fi
+          echo "DEST=$DEST" >> $GITHUB_ENV
+          echo "FINAL_FILENAME=$FILENAME" >> $GITHUB_ENV
           LIVE_FLAG=""
           if [ "$LIVE" = "true" ]; then
             LIVE_FLAG="--live-from-start --hls-use-mpegts"
@@ -91,6 +111,28 @@ jobs:
               --onedrive-chunk-size 100M \
               --stats=30s --stats-one-line -q
           echo "Done."
+
+      - name: Notify done
+        if: success() && inputs.notify_id != ''
+        env:
+          NOTIFY_ID: ${{ inputs.notify_id }}
+        run: |
+          SIZE=0
+          if [ -n "$DEST" ]; then
+            SIZE=$(rclone size "$DEST" --json 2>/dev/null | jq -r '.bytes // 0' 2>/dev/null || echo 0)
+          fi
+          curl -sS -X POST "$WORKER_NOTIFY_URL" \
+            -H "content-type: application/json" \
+            -d "{\"event\":\"done\",\"notify_id\":\"$NOTIFY_ID\",\"bytes\":$SIZE,\"filename\":\"$FINAL_FILENAME\"}" || true
+
+      - name: Notify failed
+        if: failure() && inputs.notify_id != ''
+        env:
+          NOTIFY_ID: ${{ inputs.notify_id }}
+        run: |
+          curl -sS -X POST "$WORKER_NOTIFY_URL" \
+            -H "content-type: application/json" \
+            -d "{\"event\":\"failed\",\"notify_id\":\"$NOTIFY_ID\",\"error\":\"yt-dlp or rclone failed\"}" || true
 
       - name: Update refreshed token in repo secret
         if: always()
