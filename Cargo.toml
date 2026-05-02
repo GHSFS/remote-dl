@@ -1,0 +1,50 @@
+[package]
+name = "rdl"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+description = "Stream-to-cloud download manager — desktop CLI client"
+authors = ["GHSFS"]
+license = "MIT"
+repository = "https://github.com/GHSFS/remote-dl"
+readme = "README.md"
+keywords = ["download", "cloud", "onedrive", "cli"]
+categories = ["command-line-utilities"]
+
+[[bin]]
+name = "rdl"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4.5", features = ["derive", "wrap_help"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "blocking"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+anyhow = "1"
+directories = "5"
+url = "2.5"
+base64 = "0.22"
+chrono = { version = "0.4", features = ["serde"] }
+colored = "2"
+indicatif = "0.17"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_Security_Cryptography",
+    "Win32_System_Memory",
+] }
+
+[dev-dependencies]
+mockito = "1.4"
+tempfile = "3.10"
+assert_cmd = "2"
+predicates = "3"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
