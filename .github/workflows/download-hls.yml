@@ -1,0 +1,73 @@
+name: HLS / Streaming Download
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: 'HLS / streaming URL (m3u8, youtube, twitter, etc.)'
+        required: true
+      filename:
+        description: 'Save as (without extension)'
+        required: false
+      folder:
+        description: 'OneDrive folder'
+        required: false
+        default: 'videos'
+
+permissions:
+  contents: read
+
+jobs:
+  download:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - name: Mask inputs
+        run: |
+          echo "::add-mask::${{ inputs.url }}"
+          echo "::add-mask::${{ inputs.filename }}"
+
+      - name: Setup rclone + ffmpeg + yt-dlp
+        env:
+          RCLONE_CONF: ${{ secrets.RCLONE_CONF }}
+        run: |
+          curl https://rclone.org/install.sh | sudo bash
+          mkdir -p ~/.config/rclone
+          printf '%s' "$RCLONE_CONF" > ~/.config/rclone/rclone.conf
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
+          curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp
+          sudo chmod +x /usr/local/bin/yt-dlp
+
+      - name: Stream HLS to OneDrive (yt-dlp -> stdout -> rclone rcat)
+        env:
+          URL: ${{ inputs.url }}
+          NAME: ${{ inputs.filename }}
+          FOLDER: ${{ inputs.folder }}
+        run: |
+          if [ -z "$NAME" ]; then
+            NAME="$(date +%Y%m%d_%H%M%S)"
+          fi
+          # ensure .mp4 extension
+          case "$NAME" in
+            *.mp4) ;;
+            *) NAME="${NAME}.mp4" ;;
+          esac
+          echo "::add-mask::$NAME"
+
+          yt-dlp --no-progress --no-warnings --quiet \
+            --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
+            --merge-output-format mp4 \
+            --remux-video mp4 \
+            -f "bv*+ba/b" \
+            -o - \
+            "$URL" \
+            | rclone rcat "onedrive:${FOLDER}/${NAME}" -q
+
+      - name: Refresh & save token
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          NEW=$(cat ~/.config/rclone/rclone.conf)
+          gh secret set RCLONE_CONF -b "$NEW" -R ${{ github.repository }}
