@@ -9,10 +9,15 @@ on:
       filename:
         description: 'Save as (without extension)'
         required: false
+        default: ''
       folder:
-        description: 'OneDrive folder'
+        description: 'OneDrive folder (leave blank for root)'
         required: false
-        default: 'videos'
+        default: ''
+      live:
+        description: 'Live stream mode (record from start)'
+        required: false
+        default: 'false'
 
 permissions:
   contents: read
@@ -21,53 +26,81 @@ jobs:
   download:
     runs-on: ubuntu-latest
     timeout-minutes: 350
+    env:
+      RCLONE_CONF_DATA: ${{ secrets.RCLONE_CONF }}
     steps:
       - name: Mask inputs
+        env:
+          URL: ${{ inputs.url }}
+          FILENAME: ${{ inputs.filename }}
         run: |
-          echo "::add-mask::${{ inputs.url }}"
-          echo "::add-mask::${{ inputs.filename }}"
+          echo "::add-mask::$URL"
+          [ -n "$FILENAME" ] && echo "::add-mask::$FILENAME" || true
 
       - name: Setup rclone + ffmpeg + yt-dlp
-        env:
-          RCLONE_CONF: ${{ secrets.RCLONE_CONF }}
         run: |
           curl https://rclone.org/install.sh | sudo bash
           mkdir -p ~/.config/rclone
-          printf '%s' "$RCLONE_CONF" > ~/.config/rclone/rclone.conf
+          printf '%s' "$RCLONE_CONF_DATA" > ~/.config/rclone/rclone.conf
           sudo apt-get update -qq
           sudo apt-get install -y -qq ffmpeg
           curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp
           sudo chmod +x /usr/local/bin/yt-dlp
+          yt-dlp --version
+
+      - name: Refresh token (ping OneDrive)
+        run: |
+          rclone lsd onedrive: --max-depth 1 > /dev/null
+          echo "Token verified."
 
       - name: Stream HLS to OneDrive (yt-dlp -> stdout -> rclone rcat)
         env:
           URL: ${{ inputs.url }}
-          NAME: ${{ inputs.filename }}
+          FILENAME: ${{ inputs.filename }}
           FOLDER: ${{ inputs.folder }}
+          LIVE: ${{ inputs.live }}
         run: |
-          if [ -z "$NAME" ]; then
-            NAME="$(date +%Y%m%d_%H%M%S)"
+          set -e
+          if [ -z "$FILENAME" ]; then
+            FILENAME="$(date +%Y%m%d_%H%M%S)"
           fi
-          # ensure .mp4 extension
-          case "$NAME" in
+          case "$FILENAME" in
             *.mp4) ;;
-            *) NAME="${NAME}.mp4" ;;
+            *) FILENAME="${FILENAME}.mp4" ;;
           esac
-          echo "::add-mask::$NAME"
-
+          echo "::add-mask::$FILENAME"
+          if [ -z "$FOLDER" ]; then
+            DEST="onedrive:$FILENAME"
+          else
+            DEST="onedrive:$FOLDER/$FILENAME"
+          fi
+          LIVE_FLAG=""
+          if [ "$LIVE" = "true" ]; then
+            LIVE_FLAG="--live-from-start --hls-use-mpegts"
+          fi
           yt-dlp --no-progress --no-warnings --quiet \
             --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
+            --concurrent-fragments 16 \
             --merge-output-format mp4 \
             --remux-video mp4 \
             -f "bv*+ba/b" \
+            $LIVE_FLAG \
             -o - \
             "$URL" \
-            | rclone rcat "onedrive:${FOLDER}/${NAME}" -q
+            | rclone rcat "$DEST" \
+              --onedrive-chunk-size 100M \
+              --stats=30s --stats-one-line -q
+          echo "Done."
 
-      - name: Refresh & save token
+      - name: Update refreshed token in repo secret
         if: always()
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
-          NEW=$(cat ~/.config/rclone/rclone.conf)
-          gh secret set RCLONE_CONF -b "$NEW" -R ${{ github.repository }}
+          NEW_CONF=$(cat ~/.config/rclone/rclone.conf 2>/dev/null || echo "")
+          if [ -n "$NEW_CONF" ] && [ "$NEW_CONF" != "$RCLONE_CONF_DATA" ]; then
+            gh secret set RCLONE_CONF --body "$NEW_CONF" --repo ${{ github.repository }}
+            echo "Token secret updated."
+          else
+            echo "No token change."
+          fi
