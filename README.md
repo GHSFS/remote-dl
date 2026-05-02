@@ -65,6 +65,139 @@ account; nothing is shared with other users.
                               └──────────────────────┘
 ```
 
+### Repository layout
+
+```
+remote-dl/
+├── Cargo.toml                 Package manifest. Defines the rdl binary,
+│                              dependencies, and the size-optimised release
+│                              profile (opt-level=z, lto, strip, panic=abort)
+├── Cargo.lock                 Pinned transitive dependency versions
+├── rust-toolchain.toml        Toolchain pin (stable, x86_64-pc-windows-msvc)
+├── .cargo/
+│   └── config.toml            Build target + rustflags (static MSVC CRT)
+├── .gitignore                 Excludes target/, secrets, IDE state, the
+│                              private worker.js, and root-level workflow
+│                              drafts that aren't meant for the public tree
+├── README.md                  This file
+├── LICENSE                    MIT
+├── CHANGELOG.md               Keep-a-Changelog format
+├── MIGRATION.md               Operator migration guide for bot / account /
+│                              storage credential changes
+├── src/
+│   ├── main.rs                CLI entry point. Parses clap args, dispatches
+│   │                          to per-subcommand handlers, formats colored
+│   │                          terminal output
+│   ├── cli.rs                 clap derive definitions: get, list, status,
+│   │                          config, auth, watch subcommands with their
+│   │                          flags and visible aliases
+│   ├── api.rs                 reqwest::blocking client for the edge worker.
+│   │                          Wraps /api/dl, /api/runs, /api/runs/<id>,
+│   │                          /api/ping with typed request / response shapes
+│   ├── config.rs              %APPDATA%\rdl\config.json read/write. Tokens
+│   │                          are wrapped with the Windows DPAPI before they
+│   │                          touch disk; fallback path for non-Windows
+│   │                          targets exists for CI builds
+│   └── error.rs               Crate-wide thiserror enum
+├── tests/
+│   └── integration.rs         assert_cmd-based CLI tests: --version,
+│                              subcommand help, config get/set roundtrip,
+│                              clean failure mode when no config is present
+├── docs/
+│   ├── 00-README.md           Project overview and architecture (Korean)
+│   ├── 01-인프라-선택.md      Why this infrastructure mix was chosen
+│   ├── 02-GitHub-Actions-셋업.md   GitHub Actions setup walkthrough
+│   ├── 03-Cloudflare-Worker-셋업.md  Cloudflare Worker setup walkthrough
+│   ├── 04-인증-시스템-설계.md  Auth system design (OTP + persistent tokens)
+│   ├── 05-텔레그램-봇-셋업.md  Telegram bot setup
+│   └── 06-사용법-운영.md       Day-to-day operations + troubleshooting
+└── .github/workflows/
+    ├── build.yml              CI: cargo build --release for the rdl binary;
+    │                          uploads x64 artifact; cuts a Release on tag push
+    ├── test.yml               CI: cargo fmt --check, cargo clippy -D warnings,
+    │                          cargo test --all-targets
+    ├── download.yml           Backend automation. Streams a URL to OneDrive
+    │                          via curl | rclone rcat. Inputs are masked.
+    │                          Refreshed OAuth token is written back to the
+    │                          repo secret so subsequent runs survive
+    │                          long-term inactivity
+    └── download-hls.yml       Backend automation variant for HLS / streaming
+                               sources, using yt-dlp piped into rclone rcat
+```
+
+### Compatibility
+
+| Axis | Supported |
+|---|---|
+| Operating system (client binary) | Windows 10 1809+ and Windows 11 |
+| Architecture | x86_64 only |
+| Rust toolchain | 1.75+ (`rust-toolchain.toml` pins stable) |
+| Linker | MSVC (Visual Studio Build Tools 2022) |
+| Cloud storage | Microsoft OneDrive (Personal or Business) via rclone |
+| Telegram client | any version that supports webhook bots |
+
+The shipped client binary is statically linked against the MSVC runtime, so
+it has no DLL dependencies beyond what Windows itself ships
+(`KERNEL32.DLL`, `USER32.DLL`, `ADVAPI32.DLL`, `CRYPT32.DLL`, `WS2_32.DLL`).
+
+### Security considerations
+
+- **Token at rest** — the bearer token in `%APPDATA%\rdl\config.json` is
+  DPAPI-wrapped (`CryptProtectData`). Only the originating Windows user
+  account can decrypt it.
+- **Token in transit** — `reqwest` is built with `https_only=true`; tokens
+  are sent in the `Authorization` header over TLS, never in the URL.
+- **Auth surface** — only one Telegram user (`TG_OWNER_ID`) is allowed to
+  command the bot; webhook calls require a secret in the URL path that is
+  shared only with Telegram.
+- **Workflow inputs** — every URL and filename passed to the GitHub Actions
+  workflows is masked with `::add-mask::` so it does not appear in run logs.
+- **OAuth refresh** — the OneDrive refresh token is rotated and written back
+  to the `RCLONE_CONF` repo secret on every successful run, so the system
+  survives long periods of inactivity without manual intervention.
+- **No telemetry** — neither the CLI nor the backend report any usage data
+  to third parties.
+
+### Troubleshooting
+
+| Symptom | Likely cause | Resolution |
+|---|---|---|
+| `worker URL not set` | first-time setup on this machine | `rdl config set worker https://<your-worker>.workers.dev` |
+| `not authenticated — run rdl auth login` | no token cached | Issue a permanent token via the Telegram bot, then `rdl auth login --token <token>` |
+| `server rejected credentials (401)` | token revoked or expired | Issue a new token from the bot |
+| `not found` from `rdl status <id>` | wrong job id, or run was deleted | `rdl list` to find the current job ids |
+| Workflow run fails on the OneDrive step | OneDrive token went stale (>90 days inactive) | `rclone config reconnect onedrive:` on a desktop, then update the `RCLONE_CONF` repo secret |
+| Telegram bot stops replying | webhook secret mismatch or worker code error | `https://api.telegram.org/bot<TOKEN>/getWebhookInfo` to inspect; check Cloudflare Worker logs |
+
+### Contributing
+
+This is a personal-use tool. PRs that improve the CLI ergonomics, harden
+the auth surface, or extend the workflows to additional storage backends
+are welcome.
+
+Before opening a PR:
+
+```bash
+cargo fmt
+cargo clippy --all-targets -- -D warnings
+cargo test --all-targets
+```
+
+The CI runs the same three checks; PRs that break any of them will be
+flagged.
+
+### Acknowledgements
+
+- [`clap`](https://crates.io/crates/clap) — derive-based CLI argument parsing.
+- [`reqwest`](https://crates.io/crates/reqwest) +
+  [`rustls`](https://crates.io/crates/rustls) — TLS-only HTTP client.
+- [`windows`](https://crates.io/crates/windows) — official Microsoft Win32
+  bindings, used here for the DPAPI Crypt{Protect,Unprotect}Data calls.
+- [`directories`](https://crates.io/crates/directories) — cross-platform
+  config path resolution.
+- [`rclone`](https://rclone.org) — does the actual chunked OneDrive upload
+  inside the GitHub Actions workflow.
+
 ### Installation
 
 #### Pre-built binary (Windows x64)
@@ -190,6 +323,29 @@ content with third parties.**
   자동화 러너 → 스토리지)을 벗어나지 않음
 - **자가 회전 토큰** — 전송이 성공할 때마다 OAuth refresh token이 갱신되어
   암호화 저장소에 다시 저장됨. 장기 비활성 상태에서도 동작 보장
+
+### 프로젝트 구조
+
+```
+remote-dl/
+├── Cargo.toml             패키지 매니페스트, 크기 최적화 release 프로파일
+├── rust-toolchain.toml    툴체인 고정 (stable / x86_64-pc-windows-msvc)
+├── .cargo/config.toml     빌드 타겟 + 정적 MSVC CRT
+├── README.md / LICENSE / CHANGELOG.md / MIGRATION.md
+├── src/
+│   ├── main.rs            CLI 진입점, clap 디스패처, 컬러 출력
+│   ├── cli.rs             clap 정의: get / list / status / config / auth / watch
+│   ├── api.rs             reqwest::blocking 클라이언트 (워커 API 래핑)
+│   ├── config.rs          config.json 읽기/쓰기 + DPAPI 토큰 보호
+│   └── error.rs           크레이트 전체 에러 타입
+├── tests/integration.rs   assert_cmd 기반 CLI 테스트
+├── docs/                  한국어 7부 셋업 가이드 (인프라 → 운영)
+└── .github/workflows/
+    ├── build.yml          rdl.exe 릴리스 빌드 CI
+    ├── test.yml           fmt / clippy / test CI
+    ├── download.yml       백엔드 자동화: URL → OneDrive 스트리밍
+    └── download-hls.yml   HLS / 스트리밍 변형 (yt-dlp + rclone rcat)
+```
 
 ### 아키텍처
 
@@ -344,6 +500,29 @@ MIT. [LICENSE](./LICENSE) 참고.
 - **自己回転トークン** — 転送が成功するたびに OAuth refresh token が更新され、
   暗号化ストレージに保存される
 
+### プロジェクト構成
+
+```
+remote-dl/
+├── Cargo.toml             パッケージマニフェスト、サイズ最適化リリースプロファイル
+├── rust-toolchain.toml    ツールチェイン固定 (stable / x86_64-pc-windows-msvc)
+├── .cargo/config.toml     ビルドターゲット + 静的 MSVC CRT
+├── README.md / LICENSE / CHANGELOG.md / MIGRATION.md
+├── src/
+│   ├── main.rs            CLI エントリポイント、clap ディスパッチャ、カラー出力
+│   ├── cli.rs             clap 定義: get / list / status / config / auth / watch
+│   ├── api.rs             reqwest::blocking クライアント (ワーカー API ラッパー)
+│   ├── config.rs          config.json 読み書き + DPAPI トークン保護
+│   └── error.rs           クレート全体のエラー型
+├── tests/integration.rs   assert_cmd ベースの CLI テスト
+├── docs/                  韓国語の 7 部セットアップガイド
+└── .github/workflows/
+    ├── build.yml          rdl.exe リリースビルド CI
+    ├── test.yml           fmt / clippy / test CI
+    ├── download.yml       バックエンド自動化: URL → OneDrive ストリーミング
+    └── download-hls.yml   HLS / ストリーミング派生 (yt-dlp + rclone rcat)
+```
+
 詳細なインストール、クイックスタート、CLI リファレンス、FAQ は
 [English](#english) セクションを参照してください。
 
@@ -379,6 +558,29 @@ MIT。[LICENSE](./LICENSE) を参照。
   自动化 runner → 存储提供商)
 - **自动轮换令牌** — 每次成功传输后,OAuth refresh token 都会刷新并持久化
   回加密存储,系统可以在长期空闲后继续工作
+
+### 项目结构
+
+```
+remote-dl/
+├── Cargo.toml             包清单,大小优化的 release 配置
+├── rust-toolchain.toml    工具链锁定 (stable / x86_64-pc-windows-msvc)
+├── .cargo/config.toml     构建目标 + 静态 MSVC CRT
+├── README.md / LICENSE / CHANGELOG.md / MIGRATION.md
+├── src/
+│   ├── main.rs            CLI 入口,clap 调度器,彩色输出
+│   ├── cli.rs             clap 定义: get / list / status / config / auth / watch
+│   ├── api.rs             reqwest::blocking 客户端(封装 worker API)
+│   ├── config.rs          config.json 读写 + DPAPI 令牌保护
+│   └── error.rs           crate 范围错误类型
+├── tests/integration.rs   基于 assert_cmd 的 CLI 测试
+├── docs/                  韩文 7 部设置指南
+└── .github/workflows/
+    ├── build.yml          rdl.exe release 构建 CI
+    ├── test.yml           fmt / clippy / test CI
+    ├── download.yml       后端自动化: URL → OneDrive 流式传输
+    └── download-hls.yml   HLS / 流媒体变体 (yt-dlp + rclone rcat)
+```
 
 完整的安装、快速入门、CLI 参考和 FAQ 请参见 [English](#english) 部分。
 
@@ -423,6 +625,29 @@ MIT。详见 [LICENSE](./LICENSE)。
 - **Самообновляющиеся токены** — refresh token OAuth обновляется и сохраняется
   обратно в зашифрованное хранилище после каждой успешной передачи
 
+### Структура проекта
+
+```
+remote-dl/
+├── Cargo.toml             Манифест пакета, оптимизированный по размеру release
+├── rust-toolchain.toml    Закрепление toolchain (stable / x86_64-pc-windows-msvc)
+├── .cargo/config.toml     Цель сборки + статическая MSVC CRT
+├── README.md / LICENSE / CHANGELOG.md / MIGRATION.md
+├── src/
+│   ├── main.rs            Точка входа CLI, диспетчер clap, цветной вывод
+│   ├── cli.rs             Определения clap: get / list / status / config / auth / watch
+│   ├── api.rs             Клиент reqwest::blocking (обёртка над API воркера)
+│   ├── config.rs          Чтение/запись config.json + защита токена через DPAPI
+│   └── error.rs           Тип ошибки уровня крейта
+├── tests/integration.rs   CLI-тесты на основе assert_cmd
+├── docs/                  Корейское руководство по настройке из 7 частей
+└── .github/workflows/
+    ├── build.yml          CI release-сборки rdl.exe
+    ├── test.yml           CI fmt / clippy / test
+    ├── download.yml       Бэкенд-автоматизация: URL → OneDrive потоково
+    └── download-hls.yml   Вариант для HLS / стриминга (yt-dlp + rclone rcat)
+```
+
 Подробные инструкции по установке, быстрому старту, CLI-справочник и FAQ см.
 в разделе [English](#english).
 
@@ -465,6 +690,29 @@ người dùng khác.
 - **Token tự động xoay vòng** — refresh token OAuth được làm mới và lưu lại
   vào kho mã hoá sau mỗi lần truyền thành công
 
+### Cấu trúc dự án
+
+```
+remote-dl/
+├── Cargo.toml             Manifest gói, profile release tối ưu kích thước
+├── rust-toolchain.toml    Cố định toolchain (stable / x86_64-pc-windows-msvc)
+├── .cargo/config.toml     Mục tiêu build + MSVC CRT tĩnh
+├── README.md / LICENSE / CHANGELOG.md / MIGRATION.md
+├── src/
+│   ├── main.rs            Điểm vào CLI, dispatcher clap, output có màu
+│   ├── cli.rs             Định nghĩa clap: get / list / status / config / auth / watch
+│   ├── api.rs             Client reqwest::blocking (bọc API của worker)
+│   ├── config.rs          Đọc/ghi config.json + bảo vệ token bằng DPAPI
+│   └── error.rs           Kiểu lỗi của crate
+├── tests/integration.rs   Test CLI dựa trên assert_cmd
+├── docs/                  Hướng dẫn thiết lập tiếng Hàn 7 phần
+└── .github/workflows/
+    ├── build.yml          CI build release rdl.exe
+    ├── test.yml           CI fmt / clippy / test
+    ├── download.yml       Tự động hóa backend: URL → OneDrive streaming
+    └── download-hls.yml   Biến thể HLS / streaming (yt-dlp + rclone rcat)
+```
+
 Hướng dẫn cài đặt chi tiết, khởi động nhanh, tham chiếu CLI và FAQ có ở phần
 [English](#english).
 
@@ -505,6 +753,29 @@ hesabınızı getirirsiniz; başka kullanıcılarla paylaşılan hiçbir kaynak 
   etmez (operatör → edge worker → otomasyon çalıştırıcı → depolama sağlayıcı)
 - **Kendi kendini yenileyen tokenlar** — başarılı her aktarımdan sonra OAuth
   refresh token yenilenir ve şifrelenmiş depolamaya geri kaydedilir
+
+### Proje yapısı
+
+```
+remote-dl/
+├── Cargo.toml             Paket manifesti, boyut için optimize edilmiş release
+├── rust-toolchain.toml    Toolchain sabitleme (stable / x86_64-pc-windows-msvc)
+├── .cargo/config.toml     Derleme hedefi + statik MSVC CRT
+├── README.md / LICENSE / CHANGELOG.md / MIGRATION.md
+├── src/
+│   ├── main.rs            CLI giriş noktası, clap dispatcher, renkli çıktı
+│   ├── cli.rs             clap tanımları: get / list / status / config / auth / watch
+│   ├── api.rs             reqwest::blocking istemcisi (worker API sarmalı)
+│   ├── config.rs          config.json okuma/yazma + DPAPI ile token koruması
+│   └── error.rs           Crate genelinde hata türü
+├── tests/integration.rs   assert_cmd tabanlı CLI testleri
+├── docs/                  7 bölümlük Korece kurulum kılavuzu
+└── .github/workflows/
+    ├── build.yml          rdl.exe release build CI
+    ├── test.yml           fmt / clippy / test CI
+    ├── download.yml       Arka uç otomasyonu: URL → OneDrive streaming
+    └── download-hls.yml   HLS / streaming varyantı (yt-dlp + rclone rcat)
+```
 
 Ayrıntılı kurulum, hızlı başlangıç, CLI referansı ve SSS için [English](#english)
 bölümüne bakın.
@@ -549,6 +820,29 @@ geteilt.
 - **Selbst rotierende Tokens** — OAuth-Refresh-Tokens werden bei jeder
   erfolgreichen Übertragung erneuert und in den verschlüsselten Speicher
   zurückgeschrieben
+
+### Projektstruktur
+
+```
+remote-dl/
+├── Cargo.toml             Paketmanifest, größenoptimiertes Release-Profil
+├── rust-toolchain.toml    Toolchain-Pin (stable / x86_64-pc-windows-msvc)
+├── .cargo/config.toml     Build-Ziel + statische MSVC-CRT
+├── README.md / LICENSE / CHANGELOG.md / MIGRATION.md
+├── src/
+│   ├── main.rs            CLI-Einstiegspunkt, clap-Dispatcher, farbige Ausgabe
+│   ├── cli.rs             clap-Definitionen: get / list / status / config / auth / watch
+│   ├── api.rs             reqwest::blocking-Client (Wrapper für Worker-API)
+│   ├── config.rs          config.json lesen/schreiben + DPAPI-Tokenschutz
+│   └── error.rs           Crate-weiter Fehlertyp
+├── tests/integration.rs   CLI-Tests basierend auf assert_cmd
+├── docs/                  Koreanischer 7-teiliger Setup-Leitfaden
+└── .github/workflows/
+    ├── build.yml          rdl.exe Release-Build-CI
+    ├── test.yml           fmt / clippy / test CI
+    ├── download.yml       Backend-Automatisierung: URL → OneDrive-Streaming
+    └── download-hls.yml   HLS / Streaming-Variante (yt-dlp + rclone rcat)
+```
 
 Ausführliche Installations-, Schnellstart-, CLI-Referenz- und FAQ-Anleitungen
 findest du im Abschnitt [English](#english).
@@ -596,6 +890,29 @@ usuarios.
   refrescan y persisten de vuelta al almacenamiento cifrado tras cada
   transferencia exitosa
 
+### Estructura del proyecto
+
+```
+remote-dl/
+├── Cargo.toml             Manifiesto del paquete, perfil release optimizado en tamaño
+├── rust-toolchain.toml    Fijación del toolchain (stable / x86_64-pc-windows-msvc)
+├── .cargo/config.toml     Destino de build + CRT estática de MSVC
+├── README.md / LICENSE / CHANGELOG.md / MIGRATION.md
+├── src/
+│   ├── main.rs            Entrada de CLI, dispatcher de clap, salida coloreada
+│   ├── cli.rs             Definiciones de clap: get / list / status / config / auth / watch
+│   ├── api.rs             Cliente reqwest::blocking (envuelve la API del worker)
+│   ├── config.rs          Lectura/escritura de config.json + protección DPAPI del token
+│   └── error.rs           Tipo de error del crate
+├── tests/integration.rs   Pruebas CLI basadas en assert_cmd
+├── docs/                  Guía de configuración coreana en 7 partes
+└── .github/workflows/
+    ├── build.yml          CI de build release de rdl.exe
+    ├── test.yml           CI fmt / clippy / test
+    ├── download.yml       Automatización de backend: URL → OneDrive en streaming
+    └── download-hls.yml   Variante HLS / streaming (yt-dlp + rclone rcat)
+```
+
 Para instrucciones detalladas de instalación, inicio rápido, referencia de
 CLI y FAQ, consulta la sección [English](#english).
 
@@ -641,6 +958,29 @@ usuários.
 - **Tokens auto-rotativos** — refresh tokens do OAuth são renovados e
   persistidos de volta no armazenamento criptografado a cada transferência
   bem-sucedida
+
+### Estrutura do projeto
+
+```
+remote-dl/
+├── Cargo.toml             Manifesto do pacote, perfil release otimizado em tamanho
+├── rust-toolchain.toml    Fixação do toolchain (stable / x86_64-pc-windows-msvc)
+├── .cargo/config.toml     Alvo de build + CRT estática do MSVC
+├── README.md / LICENSE / CHANGELOG.md / MIGRATION.md
+├── src/
+│   ├── main.rs            Entrada da CLI, dispatcher do clap, saída colorida
+│   ├── cli.rs             Definições do clap: get / list / status / config / auth / watch
+│   ├── api.rs             Cliente reqwest::blocking (envolve a API do worker)
+│   ├── config.rs          Leitura/escrita de config.json + proteção DPAPI do token
+│   └── error.rs           Tipo de erro do crate
+├── tests/integration.rs   Testes CLI baseados em assert_cmd
+├── docs/                  Guia de configuração coreano em 7 partes
+└── .github/workflows/
+    ├── build.yml          CI de build release do rdl.exe
+    ├── test.yml           CI fmt / clippy / test
+    ├── download.yml       Automação de backend: URL → OneDrive em streaming
+    └── download-hls.yml   Variante HLS / streaming (yt-dlp + rclone rcat)
+```
 
 Para instruções detalhadas de instalação, início rápido, referência de CLI
 e FAQ, consulte a seção [English](#english).
