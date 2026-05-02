@@ -11,9 +11,9 @@ on:
         required: false
         default: ""
       folder:
-        description: "OneDrive folder (default: remote-dl)"
+        description: "OneDrive folder (leave blank for root)"
         required: false
-        default: "remote-dl"
+        default: ""
   schedule:
     - cron: "0 0 1 * *"
 
@@ -39,9 +39,12 @@ jobs:
 
       - name: Mask sensitive inputs
         if: steps.mode.outputs.skip == 'false'
+        env:
+          URL: ${{ inputs.url }}
+          FILENAME: ${{ inputs.filename }}
         run: |
-          echo "::add-mask::${{ inputs.url }}"
-          echo "::add-mask::${{ inputs.filename }}"
+          echo "::add-mask::$URL"
+          [ -n "$FILENAME" ] && echo "::add-mask::$FILENAME" || true
 
       - name: Setup rclone
         run: |
@@ -72,7 +75,11 @@ jobs:
             FILENAME="download_$(date +%s)"
           fi
           echo "::add-mask::$FILENAME"
-          DEST="onedrive:$FOLDER/$FILENAME"
+          if [ -z "$FOLDER" ]; then
+            DEST="onedrive:$FILENAME"
+          else
+            DEST="onedrive:$FOLDER/$FILENAME"
+          fi
           echo "Streaming to OneDrive..."
           curl -sSL \
             -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
