@@ -14,11 +14,18 @@ on:
         description: "OneDrive folder (leave blank for root)"
         required: false
         default: ""
+      notify_id:
+        description: "Worker progress tracking id (auto)"
+        required: false
+        default: ""
   schedule:
     - cron: "0 0 1 * *"
 
 permissions:
   contents: read
+
+env:
+  WORKER_NOTIFY_URL: https://remote-dl.zoooaesooo.workers.dev/notify
 
 jobs:
   download:
@@ -60,6 +67,17 @@ jobs:
           rclone lsd onedrive: --max-depth 1 > /dev/null
           echo "Token verified."
 
+      - name: Notify start
+        if: steps.mode.outputs.skip == 'false' && inputs.notify_id != ''
+        env:
+          NOTIFY_ID: ${{ inputs.notify_id }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          curl -sS -X POST "$WORKER_NOTIFY_URL" \
+            -H "content-type: application/json" \
+            -d "{\"event\":\"start\",\"notify_id\":\"$NOTIFY_ID\",\"run_id\":\"$RUN_ID\",\"run_number\":$RUN_NUMBER}" || true
+
       - name: Download and stream to OneDrive
         if: steps.mode.outputs.skip == 'false'
         env:
@@ -80,6 +98,8 @@ jobs:
           else
             DEST="onedrive:$FOLDER/$FILENAME"
           fi
+          echo "DEST=$DEST" >> $GITHUB_ENV
+          echo "FINAL_FILENAME=$FILENAME" >> $GITHUB_ENV
           echo "Streaming to OneDrive..."
           curl -sSL \
             -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
@@ -90,15 +110,37 @@ jobs:
             --stats-one-line
           echo "Done."
 
+      - name: Notify done
+        if: success() && steps.mode.outputs.skip == 'false' && inputs.notify_id != ''
+        env:
+          NOTIFY_ID: ${{ inputs.notify_id }}
+        run: |
+          SIZE=0
+          if [ -n "$DEST" ]; then
+            SIZE=$(rclone size "$DEST" --json 2>/dev/null | jq -r '.bytes // 0' 2>/dev/null || echo 0)
+          fi
+          curl -sS -X POST "$WORKER_NOTIFY_URL" \
+            -H "content-type: application/json" \
+            -d "{\"event\":\"done\",\"notify_id\":\"$NOTIFY_ID\",\"bytes\":$SIZE,\"filename\":\"$FINAL_FILENAME\"}" || true
+
+      - name: Notify failed
+        if: failure() && steps.mode.outputs.skip == 'false' && inputs.notify_id != ''
+        env:
+          NOTIFY_ID: ${{ inputs.notify_id }}
+        run: |
+          curl -sS -X POST "$WORKER_NOTIFY_URL" \
+            -H "content-type: application/json" \
+            -d "{\"event\":\"failed\",\"notify_id\":\"$NOTIFY_ID\",\"error\":\"workflow step failed\"}" || true
+
       - name: Update refreshed token in repo secret
+        if: always()
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
-          NEW_CONF=$(cat ~/.config/rclone/rclone.conf)
-          if [ "$NEW_CONF" != "$RCLONE_CONF_DATA" ]; then
-            echo "Token changed, updating secret..."
+          NEW_CONF=$(cat ~/.config/rclone/rclone.conf 2>/dev/null || echo "")
+          if [ -n "$NEW_CONF" ] && [ "$NEW_CONF" != "$RCLONE_CONF_DATA" ]; then
             gh secret set RCLONE_CONF --body "$NEW_CONF" --repo ${{ github.repository }}
             echo "Secret updated."
           else
-            echo "No token change, secret stays."
+            echo "No token change."
           fi
