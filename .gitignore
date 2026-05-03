@@ -33,3 +33,8 @@ desktop.ini
 *.pdb
 *.exp
 *.lib
+
+# internal — never push
+docs/
+MIGRATION.md
+.claude/
