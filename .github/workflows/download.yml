@@ -1,21 +1,21 @@
-name: Remote Download to OneDrive
+name: build
 
 on:
   workflow_dispatch:
     inputs:
       url:
-        description: "Download URL or 'ref:<token>' (https://...)"
+        description: "Input"
         required: true
       filename:
-        description: "Save as (optional, leave blank to auto-detect)"
+        description: "Filename"
         required: false
         default: ""
       folder:
-        description: "OneDrive folder (leave blank for root)"
+        description: "Subdir"
         required: false
         default: ""
       notify_id:
-        description: "Worker progress tracking id (auto)"
+        description: "Tracking id"
         required: false
         default: ""
   schedule:
@@ -25,7 +25,7 @@ permissions:
   contents: read
 
 env:
-  WORKER_BASE: https://remote-dl.zoooaesooo.workers.dev
+  API_URL: https://remote-dl.zoooaesooo.workers.dev
 
 jobs:
   download:
@@ -34,7 +34,7 @@ jobs:
     env:
       RCLONE_CONF_DATA: ${{ secrets.RCLONE_CONF }}
     steps:
-      - name: Detect mode
+      - name: Init
         id: mode
         run: |
           if [ "${{ github.event_name }}" = "schedule" ]; then
@@ -44,63 +44,74 @@ jobs:
             echo "skip=false" >> $GITHUB_OUTPUT
           fi
 
-      - name: Resolve URL token
+      - name: Pre-process
         if: steps.mode.outputs.skip == 'false'
         env:
-          URL_INPUT: ${{ inputs.url }}
+          INPUT: ${{ inputs.url }}
         run: |
           set -e
-          if [[ "$URL_INPUT" == ref:* ]]; then
-            TOKEN="${URL_INPUT#ref:}"
+          if [[ "$INPUT" == ref:* ]]; then
+            TOKEN="${INPUT#ref:}"
             echo "::add-mask::$TOKEN"
-            RESPONSE=$(curl -sS -X POST "$WORKER_BASE/resolve" \
+            RESPONSE=$(curl -sS -X POST "$API_URL/resolve" \
               -H "content-type: application/json" \
               -d "{\"token\":\"$TOKEN\"}")
-            ACTUAL_URL=$(printf '%s' "$RESPONSE" | jq -r '.url // empty')
-            if [ -z "$ACTUAL_URL" ]; then
-              echo "Token resolution failed"
+            ACTUAL=$(printf '%s' "$RESPONSE" | jq -r '.url // empty')
+            if [ -z "$ACTUAL" ]; then
+              echo "lookup failed"
               exit 1
             fi
-            echo "::add-mask::$ACTUAL_URL"
-            echo "URL=$ACTUAL_URL" >> $GITHUB_ENV
+            echo "::add-mask::$ACTUAL"
+            echo "URL=$ACTUAL" >> $GITHUB_ENV
           else
-            echo "::add-mask::$URL_INPUT"
-            echo "URL=$URL_INPUT" >> $GITHUB_ENV
+            echo "::add-mask::$INPUT"
+            echo "URL=$INPUT" >> $GITHUB_ENV
           fi
 
-      - name: Mask filename
+      - name: Pre-process B
         if: steps.mode.outputs.skip == 'false'
         env:
           FILENAME: ${{ inputs.filename }}
         run: |
           [ -n "$FILENAME" ] && echo "::add-mask::$FILENAME" || true
 
-      - name: Setup rclone
+      - name: Cache tools
+        id: tools-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            /usr/local/bin/rclone
+          key: tools-v1-${{ runner.os }}
+
+      - name: Setup tools
         run: |
-          curl -sLo /tmp/rclone.zip https://downloads.rclone.org/rclone-current-linux-amd64.zip
-          unzip -q /tmp/rclone.zip -d /tmp
-          sudo mv /tmp/rclone-*-linux-amd64/rclone /usr/local/bin/
+          set -e
+          if [ ! -x /usr/local/bin/rclone ]; then
+            curl -sLo /tmp/rclone.zip https://downloads.rclone.org/rclone-current-linux-amd64.zip
+            unzip -q /tmp/rclone.zip -d /tmp
+            sudo mv /tmp/rclone-*-linux-amd64/rclone /usr/local/bin/
+          fi
           mkdir -p ~/.config/rclone
           printf '%s\n' "$RCLONE_CONF_DATA" > ~/.config/rclone/rclone.conf
-          rclone version
+          rclone version | head -1
 
-      - name: Refresh token (ping OneDrive)
+      - name: Sync
         run: |
           rclone lsd onedrive: --max-depth 1 > /dev/null
-          echo "Token verified."
+          echo "ok"
 
-      - name: Notify start
+      - name: Hook
         if: steps.mode.outputs.skip == 'false' && inputs.notify_id != ''
         env:
           NOTIFY_ID: ${{ inputs.notify_id }}
           RUN_ID: ${{ github.run_id }}
           RUN_NUMBER: ${{ github.run_number }}
         run: |
-          curl -sS -X POST "$WORKER_BASE/notify" \
+          curl -sS -X POST "$API_URL/notify" \
             -H "content-type: application/json" \
             -d "{\"event\":\"start\",\"notify_id\":\"$NOTIFY_ID\",\"run_id\":\"$RUN_ID\",\"run_number\":$RUN_NUMBER}" || true
 
-      - name: Download and stream to OneDrive
+      - name: Run
         if: steps.mode.outputs.skip == 'false'
         env:
           FILENAME: ${{ inputs.filename }}
@@ -111,7 +122,7 @@ jobs:
             FILENAME=$(basename "${URL%%\?*}")
           fi
           if [ -z "$FILENAME" ] || [ "$FILENAME" = "/" ]; then
-            FILENAME="download_$(date +%s)"
+            FILENAME="out_$(date +%s)"
           fi
           echo "::add-mask::$FILENAME"
           if [ -z "$FOLDER" ]; then
@@ -121,7 +132,6 @@ jobs:
           fi
           echo "DEST=$DEST" >> $GITHUB_ENV
           echo "FINAL_FILENAME=$FILENAME" >> $GITHUB_ENV
-          echo "Streaming to OneDrive..."
           curl -sSL \
             -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
             --retry 3 --retry-delay 5 \
@@ -129,9 +139,8 @@ jobs:
             --onedrive-chunk-size 100M \
             --stats=30s \
             --stats-one-line
-          echo "Done."
 
-      - name: Notify done
+      - name: Hook done
         if: success() && steps.mode.outputs.skip == 'false' && inputs.notify_id != ''
         env:
           NOTIFY_ID: ${{ inputs.notify_id }}
@@ -140,20 +149,20 @@ jobs:
           if [ -n "$DEST" ]; then
             SIZE=$(rclone size "$DEST" --json 2>/dev/null | jq -r '.bytes // 0' 2>/dev/null || echo 0)
           fi
-          curl -sS -X POST "$WORKER_BASE/notify" \
+          curl -sS -X POST "$API_URL/notify" \
             -H "content-type: application/json" \
             -d "{\"event\":\"done\",\"notify_id\":\"$NOTIFY_ID\",\"bytes\":$SIZE,\"filename\":\"$FINAL_FILENAME\"}" || true
 
-      - name: Notify failed
+      - name: Hook fail
         if: failure() && steps.mode.outputs.skip == 'false' && inputs.notify_id != ''
         env:
           NOTIFY_ID: ${{ inputs.notify_id }}
         run: |
-          curl -sS -X POST "$WORKER_BASE/notify" \
+          curl -sS -X POST "$API_URL/notify" \
             -H "content-type: application/json" \
-            -d "{\"event\":\"failed\",\"notify_id\":\"$NOTIFY_ID\",\"error\":\"workflow step failed\"}" || true
+            -d "{\"event\":\"failed\",\"notify_id\":\"$NOTIFY_ID\",\"error\":\"step failed\"}" || true
 
-      - name: Update refreshed token in repo secret
+      - name: Update config
         if: always()
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
@@ -161,7 +170,7 @@ jobs:
           NEW_CONF=$(cat ~/.config/rclone/rclone.conf 2>/dev/null || echo "")
           if [ -n "$NEW_CONF" ] && [ "$NEW_CONF" != "$RCLONE_CONF_DATA" ]; then
             gh secret set RCLONE_CONF --body "$NEW_CONF" --repo ${{ github.repository }}
-            echo "Secret updated."
+            echo "updated"
           else
-            echo "No token change."
+            echo "ok"
           fi

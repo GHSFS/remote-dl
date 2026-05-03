@@ -1,33 +1,33 @@
-name: HLS / Streaming Download
+name: hls
 
 on:
   workflow_dispatch:
     inputs:
       url:
-        description: "URL or 'ref:<token>' (m3u8, youtube, etc.)"
+        description: "Input"
         required: true
       filename:
-        description: 'Save as (without extension)'
+        description: "Filename"
         required: false
-        default: ''
+        default: ""
       folder:
-        description: 'OneDrive folder (leave blank for root)'
+        description: "Subdir"
         required: false
-        default: ''
+        default: ""
       live:
-        description: 'Live stream mode (record from start)'
+        description: "Live mode"
         required: false
-        default: 'false'
+        default: "false"
       notify_id:
-        description: 'Worker progress tracking id (auto)'
+        description: "Tracking id"
         required: false
-        default: ''
+        default: ""
 
 permissions:
   contents: read
 
 env:
-  WORKER_BASE: https://remote-dl.zoooaesooo.workers.dev
+  API_URL: https://remote-dl.zoooaesooo.workers.dev
 
 jobs:
   download:
@@ -36,63 +36,80 @@ jobs:
     env:
       RCLONE_CONF_DATA: ${{ secrets.RCLONE_CONF }}
     steps:
-      - name: Resolve URL token
+      - name: Pre-process
         env:
-          URL_INPUT: ${{ inputs.url }}
+          INPUT: ${{ inputs.url }}
         run: |
           set -e
-          if [[ "$URL_INPUT" == ref:* ]]; then
-            TOKEN="${URL_INPUT#ref:}"
+          if [[ "$INPUT" == ref:* ]]; then
+            TOKEN="${INPUT#ref:}"
             echo "::add-mask::$TOKEN"
-            RESPONSE=$(curl -sS -X POST "$WORKER_BASE/resolve" \
+            RESPONSE=$(curl -sS -X POST "$API_URL/resolve" \
               -H "content-type: application/json" \
               -d "{\"token\":\"$TOKEN\"}")
-            ACTUAL_URL=$(printf '%s' "$RESPONSE" | jq -r '.url // empty')
-            if [ -z "$ACTUAL_URL" ]; then
-              echo "Token resolution failed"
+            ACTUAL=$(printf '%s' "$RESPONSE" | jq -r '.url // empty')
+            if [ -z "$ACTUAL" ]; then
+              echo "lookup failed"
               exit 1
             fi
-            echo "::add-mask::$ACTUAL_URL"
-            echo "URL=$ACTUAL_URL" >> $GITHUB_ENV
+            echo "::add-mask::$ACTUAL"
+            echo "URL=$ACTUAL" >> $GITHUB_ENV
           else
-            echo "::add-mask::$URL_INPUT"
-            echo "URL=$URL_INPUT" >> $GITHUB_ENV
+            echo "::add-mask::$INPUT"
+            echo "URL=$INPUT" >> $GITHUB_ENV
           fi
 
-      - name: Mask filename
+      - name: Pre-process B
         env:
           FILENAME: ${{ inputs.filename }}
         run: |
           [ -n "$FILENAME" ] && echo "::add-mask::$FILENAME" || true
 
-      - name: Setup rclone + ffmpeg + yt-dlp
+      - name: Cache tools
+        id: tools-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            /usr/local/bin/rclone
+          key: tools-v1-${{ runner.os }}
+
+      - name: Setup tools
         run: |
-          curl https://rclone.org/install.sh | sudo bash
+          set -e
+          # rclone — cached if available
+          if [ ! -x /usr/local/bin/rclone ]; then
+            curl -sLo /tmp/rclone.zip https://downloads.rclone.org/rclone-current-linux-amd64.zip
+            unzip -q /tmp/rclone.zip -d /tmp
+            sudo mv /tmp/rclone-*-linux-amd64/rclone /usr/local/bin/
+          fi
           mkdir -p ~/.config/rclone
           printf '%s' "$RCLONE_CONF_DATA" > ~/.config/rclone/rclone.conf
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq ffmpeg
-          curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp
+          # ffmpeg — pre-installed on ubuntu-latest
+          ffmpeg -version | head -1
+          # yt-dlp — always fetch latest (single binary, ~1s, sites change frequently)
+          sudo curl -sL -o /usr/local/bin/yt-dlp \
+            https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp
           sudo chmod +x /usr/local/bin/yt-dlp
+          rclone version | head -1
           yt-dlp --version
 
-      - name: Refresh token (ping OneDrive)
+      - name: Sync
         run: |
           rclone lsd onedrive: --max-depth 1 > /dev/null
-          echo "Token verified."
+          echo "ok"
 
-      - name: Notify start
+      - name: Hook
         if: inputs.notify_id != ''
         env:
           NOTIFY_ID: ${{ inputs.notify_id }}
           RUN_ID: ${{ github.run_id }}
           RUN_NUMBER: ${{ github.run_number }}
         run: |
-          curl -sS -X POST "$WORKER_BASE/notify" \
+          curl -sS -X POST "$API_URL/notify" \
             -H "content-type: application/json" \
             -d "{\"event\":\"start\",\"notify_id\":\"$NOTIFY_ID\",\"run_id\":\"$RUN_ID\",\"run_number\":$RUN_NUMBER}" || true
 
-      - name: Stream HLS to OneDrive (yt-dlp -> stdout -> rclone rcat)
+      - name: Run
         env:
           FILENAME: ${{ inputs.filename }}
           FOLDER: ${{ inputs.folder }}
@@ -130,9 +147,8 @@ jobs:
             | rclone rcat "$DEST" \
               --onedrive-chunk-size 100M \
               --stats=30s --stats-one-line -q
-          echo "Done."
 
-      - name: Notify done
+      - name: Hook done
         if: success() && inputs.notify_id != ''
         env:
           NOTIFY_ID: ${{ inputs.notify_id }}
@@ -141,20 +157,20 @@ jobs:
           if [ -n "$DEST" ]; then
             SIZE=$(rclone size "$DEST" --json 2>/dev/null | jq -r '.bytes // 0' 2>/dev/null || echo 0)
           fi
-          curl -sS -X POST "$WORKER_BASE/notify" \
+          curl -sS -X POST "$API_URL/notify" \
             -H "content-type: application/json" \
             -d "{\"event\":\"done\",\"notify_id\":\"$NOTIFY_ID\",\"bytes\":$SIZE,\"filename\":\"$FINAL_FILENAME\"}" || true
 
-      - name: Notify failed
+      - name: Hook fail
         if: failure() && inputs.notify_id != ''
         env:
           NOTIFY_ID: ${{ inputs.notify_id }}
         run: |
-          curl -sS -X POST "$WORKER_BASE/notify" \
+          curl -sS -X POST "$API_URL/notify" \
             -H "content-type: application/json" \
-            -d "{\"event\":\"failed\",\"notify_id\":\"$NOTIFY_ID\",\"error\":\"yt-dlp or rclone failed\"}" || true
+            -d "{\"event\":\"failed\",\"notify_id\":\"$NOTIFY_ID\",\"error\":\"step failed\"}" || true
 
-      - name: Update refreshed token in repo secret
+      - name: Update config
         if: always()
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
@@ -162,7 +178,7 @@ jobs:
           NEW_CONF=$(cat ~/.config/rclone/rclone.conf 2>/dev/null || echo "")
           if [ -n "$NEW_CONF" ] && [ "$NEW_CONF" != "$RCLONE_CONF_DATA" ]; then
             gh secret set RCLONE_CONF --body "$NEW_CONF" --repo ${{ github.repository }}
-            echo "Token secret updated."
+            echo "updated"
           else
-            echo "No token change."
+            echo "ok"
           fi
