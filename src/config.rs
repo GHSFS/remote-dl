@@ -92,9 +92,9 @@ impl Config {
     }
 
     pub fn worker(&self) -> Result<&str> {
-        self.worker
-            .as_deref()
-            .ok_or_else(|| Error::Config("worker URL not set — run `rdl config set worker …`".into()))
+        self.worker.as_deref().ok_or_else(|| {
+            Error::Config("worker URL not set — run `rdl config set worker …`".into())
+        })
     }
 }
 
@@ -108,23 +108,15 @@ mod dpapi {
     };
 
     pub fn protect(plain: &str) -> Result<String> {
-        let mut input = CRYPT_INTEGER_BLOB {
+        let input = CRYPT_INTEGER_BLOB {
             cbData: plain.len() as u32,
             pbData: plain.as_ptr() as *mut u8,
         };
         let mut output = CRYPT_INTEGER_BLOB::default();
 
         unsafe {
-            CryptProtectData(
-                &mut input,
-                None,
-                None,
-                None,
-                None,
-                0,
-                &mut output,
-            )
-            .map_err(|e| Error::Config(format!("DPAPI protect failed: {e}")))?;
+            CryptProtectData(&input, None, None, None, None, 0, &mut output)
+                .map_err(|e| Error::Config(format!("DPAPI protect failed: {e}")))?;
 
             let bytes = std::slice::from_raw_parts(output.pbData, output.cbData as usize);
             let encoded = B64.encode(bytes);
@@ -137,23 +129,15 @@ mod dpapi {
         let mut bytes = B64
             .decode(encoded)
             .map_err(|e| Error::Config(format!("invalid token encoding: {e}")))?;
-        let mut input = CRYPT_INTEGER_BLOB {
+        let input = CRYPT_INTEGER_BLOB {
             cbData: bytes.len() as u32,
             pbData: bytes.as_mut_ptr(),
         };
         let mut output = CRYPT_INTEGER_BLOB::default();
 
         unsafe {
-            CryptUnprotectData(
-                &mut input,
-                None,
-                None,
-                None,
-                None,
-                0,
-                &mut output,
-            )
-            .map_err(|e| Error::Config(format!("DPAPI unprotect failed: {e}")))?;
+            CryptUnprotectData(&input, None, None, None, None, 0, &mut output)
+                .map_err(|e| Error::Config(format!("DPAPI unprotect failed: {e}")))?;
 
             let plain = std::slice::from_raw_parts(output.pbData, output.cbData as usize);
             let s = String::from_utf8_lossy(plain).into_owned();

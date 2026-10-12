@@ -75,8 +75,7 @@ impl Client {
             .send()
             .map_err(|e| Error::Http(e.to_string()))?;
         check_status(&resp)?;
-        let envelope: RunListResponse =
-            resp.json().map_err(|e| Error::Http(e.to_string()))?;
+        let envelope: RunListResponse = resp.json().map_err(|e| Error::Http(e.to_string()))?;
         Ok(envelope.runs)
     }
 
