@@ -124,7 +124,7 @@ struct RunListResponse {
     runs: Vec<RunInfo>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct RunInfo {
     pub id: String,
     pub name: String,

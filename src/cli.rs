@@ -1,6 +1,7 @@
 //! Command-line interface definitions.
 
 use clap::{Parser, Subcommand};
+use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -30,6 +31,10 @@ pub enum Command {
         /// Destination subfolder under the configured root.
         #[arg(short, long)]
         folder: Option<String>,
+
+        /// Emit structured JSON output.
+        #[arg(long)]
+        json: bool,
     },
 
     /// Show recent downloads.
@@ -38,6 +43,10 @@ pub enum Command {
         /// Maximum number of entries to show.
         #[arg(short, long, default_value_t = 10)]
         limit: usize,
+
+        /// Emit structured JSON output.
+        #[arg(long)]
+        json: bool,
     },
 
     /// Show status of a single job (latest if id omitted).
@@ -45,6 +54,41 @@ pub enum Command {
     Status {
         /// Job id. If omitted, shows the most recent job.
         id: Option<String>,
+
+        /// Emit structured JSON output.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Pre-flight inspect remote URL headers, content-length, range support, and suggested name.
+    Inspect {
+        /// Target URL to inspect.
+        url: String,
+
+        /// Emit structured JSON output.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Enqueue multiple URLs sequentially from a file.
+    Batch {
+        /// Path to file containing URLs (one per line).
+        file: PathBuf,
+
+        /// Destination subfolder under the configured root.
+        #[arg(short, long)]
+        folder: Option<String>,
+
+        /// Emit structured JSON output.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Test connectivity and authenticate with the configured edge worker.
+    Ping {
+        /// Emit structured JSON output.
+        #[arg(long)]
+        json: bool,
     },
 
     /// Get or set local client configuration.
@@ -79,6 +123,12 @@ pub enum ConfigCmd {
     },
     /// Print the path to the active config file.
     Path,
+    /// Display active configuration summary with masked token.
+    Show {
+        /// Emit structured JSON output.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]

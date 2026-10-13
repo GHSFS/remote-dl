@@ -232,12 +232,15 @@ USAGE:
     rdl <SUBCOMMAND>
 
 SUBCOMMANDS:
-    <url>                       Queue a URL for download
-    list                        Show recent downloads
-    status [job-id]             Show job status
-    config <get|set> <key> [v]  Read/write client config
-    auth <login|logout>         Manage authentication
-    watch                       Run in clipboard-monitor mode
+    get, g <url>                Queue a URL for download (--name, --folder, --json)
+    list, ls                    Show recent downloads (--limit, --json)
+    status, st [job-id]         Show job status (--json)
+    inspect <url>               Pre-flight inspect remote headers, size, range support (--json)
+    batch <file>                Batch enqueue URLs from a text file (--folder, --json)
+    ping                        Test worker connectivity and authentication (--json)
+    config <get|set|path|show>  Read/write/diagnose client configuration
+    auth <login|logout>         Manage DPAPI permanent authentication token
+    watch                       Run in clipboard-monitor mode (rdl-tray companion)
     help                        Print help
 ```
 
@@ -457,16 +460,24 @@ rdl status <job-id>
 
 ```
 사용법:
-    rdl <SUBCOMMAND>
+    rdl [OPTIONS] <SUBCOMMAND>
 
 서브커맨드:
-    <url>                       URL을 다운로드 큐에 등록
-    list                        최근 다운로드 목록
-    status [job-id]             특정 잡 상태
-    config <get|set> <key> [v]  클라이언트 설정 조회/변경
-    auth <login|logout>         인증 관리
+    get, g <url>                URL을 다운로드 큐에 등록 (단축: rdl <url>)
+    inspect <url>               사전 검사 (크기, Content-Type, Range 지원 여부)
+    batch <file>                텍스트 파일 기반 일괄 다운로드 큐 등록
+    list, ls                    최근 다운로드 목록 조회
+    status, st [job-id]         작업 상태 조회
+    ping                        워커 서버 연결 및 지연 시간 측정
+    config <get|set|path|show>  클라이언트 설정 조회 및 관리
+    auth <login|logout>         토큰 인증 관리 (Windows DPAPI 암호화)
     watch                       클립보드 감시 모드 실행
     help                        도움말 출력
+
+옵션:
+    -j, --json                  결과를 JSON 포맷으로 출력
+    -h, --help                  도움말 출력
+    -V, --version               버전 정보 출력
 ```
 
 ### 설정
@@ -506,13 +517,6 @@ A. OneDrive 업로드 쪽은 청크 단위 자동 재개가 됩니다. 다운로
 ### 라이선스
 
 MIT. [LICENSE](./LICENSE) 참고.
-
-### 면책
-
-본 프로젝트는 사용자 본인이 소유하거나 다운로드 권한이 있는 컨텐츠를
-아카이브하기 위한 개인용 도구입니다. 출처 사이트의 이용약관 및 저작권법
-준수는 전적으로 운영자(사용자) 본인의 책임이며, **본 도구를 제3자에 대한
-재배포, 미러링, 프록시, 공유 용도로 사용하지 마십시오.**
 
 ---
 

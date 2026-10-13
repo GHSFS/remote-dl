@@ -1,6 +1,6 @@
 [package]
 name = "rdl"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 rust-version = "1.75"
 description = "Stream-to-cloud download manager — desktop CLI client"
