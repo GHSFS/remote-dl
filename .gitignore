@@ -35,5 +35,6 @@ desktop.ini
 *.lib
 
 # internal — never push
-docs/
+docs/*
+!docs/locales/
 MIGRATION.md
